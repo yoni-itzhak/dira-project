@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#174f46" />
+  <meta name="description" content="כלי השוואה ובחירת דירה בפרויקט סירקין 201" />
+  <title>בחירת דירה · סירקין 201</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar__inner">
+      <button class="brand" type="button" data-view="apartments" aria-label="חזרה לרשימת הדירות">
+        <span class="brand__mark">ד</span>
+        <span><strong>בחירת דירה</strong><small>סירקין 201 · אדרת בצמרת</small></span>
+      </button>
+      <nav class="nav" aria-label="ניווט ראשי">
+        <button class="nav__item is-active" data-view="apartments">כל הדירות</button>
+        <button class="nav__item" data-view="shortlist">המובילות</button>
+        <button class="nav__item" data-view="map">מפת הסביבה</button>
+      </nav>
+      <div class="topbar__actions">
+        <button class="icon-button" id="favoritesButton" title="מועדפים" aria-label="הצגת מועדפים">
+          <span aria-hidden="true">♡</span><b id="favoritesCount">0</b>
+        </button>
+        <a class="button button--ghost" href="assets/sirkin-201-analysis-he.xlsx" download>הורדת Excel</a>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="hero__content">
+        <p class="eyebrow">כלי החלטה אישי</p>
+        <h1>למצוא את הדירה הנכונה,<br><span>בלי ללכת לאיבוד בתכניות.</span></h1>
+        <p class="hero__copy">סינון, דירוג והשוואה של 105 דירות לפי תכנון, נוף, קומה, מחיר ופוטנציאל מכירה עתידי.</p>
+        <div class="hero__stats" id="heroStats"></div>
+      </div>
+      <div class="hero__spotlight" id="topSpotlight"></div>
+    </section>
+
+    <section class="workspace" id="apartmentsView">
+      <aside class="filters" aria-label="מסננים">
+        <div class="filters__heading">
+          <div><p class="eyebrow">צמצום תוצאות</p><h2>מסננים</h2></div>
+          <button class="text-button" id="resetFilters">איפוס</button>
+        </div>
+
+        <label class="field field--search">
+          <span>חיפוש</span>
+          <div class="input-wrap"><span aria-hidden="true">⌕</span><input id="searchInput" type="search" placeholder="מזהה, טיפוס או תיאור נוף" /></div>
+        </label>
+
+        <fieldset class="field">
+          <legend>סטטוס שיווק</legend>
+          <div class="segmented" id="statusFilter">
+            <button data-value="מחיר מטרה" class="is-active">מחיר מטרה</button>
+            <button data-value="all">הכול</button>
+          </div>
+        </fieldset>
+
+        <fieldset class="field">
+          <legend>בניין</legend>
+          <div class="choice-row" id="buildingFilter">
+            <button data-value="all" class="is-active">הכול</button>
+            <button data-value="1">1</button><button data-value="2">2</button><button data-value="3">3</button>
+          </div>
+        </fieldset>
+
+        <fieldset class="field">
+          <legend>מספר חדרים</legend>
+          <div class="choice-row" id="roomsFilter">
+            <button data-value="all" class="is-active">הכול</button>
+            <button data-value="3">3</button><button data-value="4">4</button><button data-value="5">5</button><button data-value="6">6</button>
+          </div>
+        </fieldset>
+
+        <div class="field range-field">
+          <div class="field__row"><span>קומה מינימלית</span><output id="floorOutput">0</output></div>
+          <input id="floorRange" type="range" min="0" max="8" value="0" step="1" />
+          <div class="range-ticks"><span>0</span><span>4</span><span>8</span></div>
+        </div>
+
+        <label class="field">
+          <span>מסקנה</span>
+          <select id="conclusionFilter">
+            <option value="all">כל המסקנות</option>
+            <option value="בחירה חזקה מאוד">בחירה חזקה מאוד</option>
+            <option value="בחירה חזקה">בחירה חזקה</option>
+            <option value="טובה עם פשרה">טובה עם פשרה</option>
+            <option value="בינונית – לבדוק היטב">בינונית – לבדוק היטב</option>
+            <option value="פשרה משמעותית">פשרה משמעותית</option>
+          </select>
+        </label>
+
+        <label class="toggle-row">
+          <input id="favoritesOnly" type="checkbox" />
+          <span class="toggle" aria-hidden="true"></span>
+          <span>רק דירות שסימנתי</span>
+        </label>
+      </aside>
+
+      <div class="results">
+        <div class="results__toolbar">
+          <div><p class="eyebrow">תוצאות</p><h2><span id="resultsCount">0</span> דירות</h2></div>
+          <div class="toolbar__controls">
+            <label class="view-toggle" aria-label="תצוגה">
+              <button id="gridViewButton" class="is-active" title="כרטיסים">▦</button>
+              <button id="tableViewButton" title="טבלה">☷</button>
+            </label>
+            <label class="sort-control">מיון
+              <select id="sortSelect">
+                <option value="rank">דירוג מומלץ</option>
+                <option value="overall-desc">ציון משולב</option>
+                <option value="view-desc">ציון נוף</option>
+                <option value="layout-desc">ציון תכנון</option>
+                <option value="floor-desc">קומה – מהגבוהה</option>
+                <option value="price-asc">מחיר – מהנמוך</option>
+                <option value="profit-desc">רווח משוער</option>
+                <option value="area-desc">שטח – מהגדול</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div class="loading-note" id="plansLoading"><span class="spinner"></span> טוען את חיתוכי התכניות…</div>
+        <div class="cards" id="apartmentCards"></div>
+        <div class="table-shell is-hidden" id="tableShell"><table><thead id="apartmentsTableHead"></thead><tbody id="apartmentsTableBody"></tbody></table></div>
+        <div class="empty-state is-hidden" id="emptyState"><div>⌕</div><h3>לא נמצאו דירות מתאימות</h3><p>נסו לשנות או לאפס את המסננים.</p></div>
+      </div>
+    </section>
+
+    <section class="content-view is-hidden" id="shortlistView">
+      <div class="section-heading"><div><p class="eyebrow">נקודת פתיחה לבחירה</p><h2>הדירות המובילות במחיר מטרה</h2><p>הדירוג משלב תכנון, נוף, אטרקטיביות לרוכש והערכה פיננסית.</p></div></div>
+      <div class="shortlist" id="shortlist"></div>
+    </section>
+
+    <section class="content-view is-hidden" id="mapView">
+      <div class="section-heading"><div><p class="eyebrow">הקשר תכנוני</p><h2>מפת סביבת הפרויקט</h2><p>החצים מסמנים את כיווני המבט המרכזיים: פארק, בית ספר, בניינים סמוכים והכניסה לשכונה.</p></div></div>
+      <figure class="map-card">
+        <img src="assets/project-surroundings.webp" alt="תרשים סביבת פרויקט סירקין 201" />
+        <figcaption><strong>חשוב:</strong> התכנון העתידי במגרשים הסמוכים עשוי להשתנות. יש לאמת מול תכניות סטטוטוריות ומסמכי המכר.</figcaption>
+      </figure>
+    </section>
+  </main>
+
+  <div class="compare-bar is-hidden" id="compareBar">
+    <div><strong>השוואה</strong><span id="compareSummary">0 דירות נבחרו</span></div>
+    <div id="compareChips" class="compare-chips"></div>
+    <button class="button" id="openCompare">השוואה מלאה</button>
+  </div>
+
+  <dialog class="detail-dialog" id="detailDialog">
+    <button class="dialog-close" data-close-dialog aria-label="סגירה">×</button>
+    <div id="detailContent"></div>
+  </dialog>
+
+  <dialog class="compare-dialog" id="compareDialog">
+    <button class="dialog-close" data-close-compare aria-label="סגירה">×</button>
+    <div class="compare-dialog__content">
+      <div class="section-heading"><div><p class="eyebrow">זו לצד זו</p><h2>השוואת דירות</h2></div></div>
+      <div class="compare-table-shell" id="compareTable"></div>
+    </div>
+  </dialog>
+
+  <template id="cardTemplate">
+    <article class="apartment-card">
+      <div class="card-image-wrap">
+        <div class="card-image-placeholder"><span class="spinner"></span></div>
+        <img class="card-image" alt="" loading="lazy" />
+        <span class="rank-badge"></span>
+        <button class="favorite-button" aria-label="הוספה למועדפים">♡</button>
+        <span class="status-badge"></span>
+      </div>
+      <div class="card-body">
+        <div class="card-heading"><div><p class="card-kicker"></p><h3></h3></div><span class="conclusion-badge"></span></div>
+        <div class="card-metrics"></div>
+        <p class="card-view"></p>
+        <div class="score-strip"></div>
+        <div class="card-price"></div>
+        <div class="card-actions"><button class="button button--ghost compare-toggle">השוואה</button><button class="button details-button">לפרטים</button></div>
+      </div>
+    </article>
+  </template>
+
+  <script src="vendor/jszip.min.js"></script>
+  <script src="data/apartments.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
