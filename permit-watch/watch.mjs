@@ -5,82 +5,67 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 const TARGETS = [
-  {
-    requestId: '20240342',
-    url: 'https://www.petah-tikva.muni.il/engineering/planning-and-building/building2#request/20240342',
-  },
-  {
-    requestId: '20260298',
-    url: 'https://www.petah-tikva.muni.il/engineering/planning-and-building/building2#request/20260298',
-  },
-];
+  ['20240342', 'https://www.petah-tikva.muni.il/engineering/planning-and-building/building2#request/20240342'],
+  ['20260298', 'https://www.petah-tikva.muni.il/engineering/planning-and-building/building2#request/20260298'],
+].map(([requestId, url]) => ({ requestId, url }));
 
 const ROOT = process.cwd();
 const STATE_DIR = path.join(ROOT, 'state');
 const ARTIFACT_DIR = path.join(ROOT, 'artifacts');
-const REPORT_PATH = path.join(ROOT, 'report.md');
-const RESULT_PATH = path.join(ROOT, 'result.json');
-const FORCE_NOTIFY = ['1', 'true', 'yes'].includes(String(process.env.FORCE_NOTIFY || '').toLowerCase());
+const FORCE_NOTIFY = /^(1|true|yes)$/i.test(process.env.FORCE_NOTIFY || '');
 
 await fs.mkdir(STATE_DIR, { recursive: true });
 await fs.mkdir(ARTIFACT_DIR, { recursive: true });
 
-function sha256(value) {
-  return crypto.createHash('sha256').update(value).digest('hex');
-}
+const hash = (value) => crypto.createHash('sha256').update(value).digest('hex');
+const statePath = (id) => path.join(STATE_DIR, `request-${id}.json`);
+const errorPath = (id) => path.join(STATE_DIR, `request-${id}.error.json`);
 
-function normalizeText(value) {
-  const noisyExactLines = new Set(['Facebook', 'Instagram', 'YouTube', 'LinkedIn']);
+function normalize(value) {
+  const ignored = new Set(['Facebook', 'Instagram', 'YouTube', 'LinkedIn']);
   return String(value || '')
     .replace(/[\u200B-\u200D\uFEFF]/g, '')
     .replace(/\r/g, '')
     .split('\n')
     .map((line) => line.replace(/\s+/g, ' ').trim())
     .filter(Boolean)
-    .filter((line) => !noisyExactLines.has(line))
+    .filter((line) => !ignored.has(line))
     .filter((line, index, lines) => index === 0 || line !== lines[index - 1])
-    .join('\n')
-    .trim();
+    .join('\n');
 }
 
-function countLines(lines) {
-  const counts = new Map();
-  for (const line of lines) counts.set(line, (counts.get(line) || 0) + 1);
-  return counts;
-}
-
-function lineDiff(before, after, limit = 80) {
-  const beforeLines = normalizeText(before).split('\n').filter(Boolean);
-  const afterLines = normalizeText(after).split('\n').filter(Boolean);
-  const beforeCounts = countLines(beforeLines);
-  const afterCounts = countLines(afterLines);
-  const removed = [];
+function diffLines(before, after, limit = 80) {
+  const oldLines = normalize(before).split('\n').filter(Boolean);
+  const newLines = normalize(after).split('\n').filter(Boolean);
+  const counts = (lines) => lines.reduce((map, line) => map.set(line, (map.get(line) || 0) + 1), new Map());
+  const oldCounts = counts(oldLines);
+  const newCounts = counts(newLines);
   const added = [];
-  const removedCounts = new Map();
-  const addedCounts = new Map();
+  const removed = [];
+  const seenAdded = new Map();
+  const seenRemoved = new Map();
 
-  for (const line of beforeLines) {
-    const needed = Math.max(0, (beforeCounts.get(line) || 0) - (afterCounts.get(line) || 0));
-    const current = removedCounts.get(line) || 0;
-    if (current < needed && removed.length < limit) {
-      removed.push(line);
-      removedCounts.set(line, current + 1);
-    }
-  }
-  for (const line of afterLines) {
-    const needed = Math.max(0, (afterCounts.get(line) || 0) - (beforeCounts.get(line) || 0));
-    const current = addedCounts.get(line) || 0;
-    if (current < needed && added.length < limit) {
+  for (const line of newLines) {
+    const needed = Math.max(0, (newCounts.get(line) || 0) - (oldCounts.get(line) || 0));
+    const seen = seenAdded.get(line) || 0;
+    if (seen < needed && added.length < limit) {
       added.push(line);
-      addedCounts.set(line, current + 1);
+      seenAdded.set(line, seen + 1);
     }
   }
-
+  for (const line of oldLines) {
+    const needed = Math.max(0, (oldCounts.get(line) || 0) - (newCounts.get(line) || 0));
+    const seen = seenRemoved.get(line) || 0;
+    if (seen < needed && removed.length < limit) {
+      removed.push(line);
+      seenRemoved.set(line, seen + 1);
+    }
+  }
   return { added, removed };
 }
 
-function isBlocked(text) {
-  const patterns = [
+function blocked(text) {
+  return [
     /request rejected/i,
     /access denied/i,
     /incident id/i,
@@ -88,29 +73,27 @@ function isBlocked(text) {
     /cloudflare ray id/i,
     /הגישה נדחתה/,
     /הבקשה נדחתה/,
-  ];
-  return patterns.some((pattern) => pattern.test(text));
+  ].some((pattern) => pattern.test(text));
 }
 
-async function createBrowser() {
-  if (process.env.BROWSERBASE_API_KEY) {
-    const bb = new Browserbase({ apiKey: process.env.BROWSERBASE_API_KEY });
-    const session = await bb.sessions.create({
-      projectId: process.env.BROWSERBASE_PROJECT_ID || undefined,
-      proxies: true,
-      region: 'eu-central-1',
-      timeout: 600,
-      userMetadata: { purpose: 'petah-tikva-permit-watch' },
-      browserSettings: {
-        viewport: { width: 1440, height: 1100 },
-        blockAds: true,
-      },
-    });
-    const browser = await chromium.connectOverCDP(session.connectUrl);
-    const context = browser.contexts()[0] || await browser.newContext();
-    return { browser, context, mode: 'browserbase', sessionId: session.id };
+async function readJson(file) {
+  try {
+    return JSON.parse(await fs.readFile(file, 'utf8'));
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
   }
+}
 
+async function writeJson(file, value) {
+  await fs.writeFile(file, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+}
+
+async function removeIfPresent(file) {
+  await fs.rm(file, { force: true });
+}
+
+async function launchGitHubBrowser() {
   const browser = await chromium.launch({
     headless: true,
     args: ['--disable-blink-features=AutomationControlled'],
@@ -120,21 +103,36 @@ async function createBrowser() {
     timezoneId: 'Asia/Jerusalem',
     viewport: { width: 1440, height: 1100 },
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
-    extraHTTPHeaders: {
-      'Accept-Language': 'he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7',
-    },
+    extraHTTPHeaders: { 'Accept-Language': 'he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7' },
   });
   await context.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
   });
-  return { browser, context, mode: 'github-hosted', sessionId: null };
+  return { browser, context, mode: 'github-hosted' };
+}
+
+async function launchBrowserbase() {
+  const bb = new Browserbase({ apiKey: process.env.BROWSERBASE_API_KEY });
+  const session = await bb.sessions.create({
+    projectId: process.env.BROWSERBASE_PROJECT_ID || undefined,
+    proxies: true,
+    region: 'eu-central-1',
+    timeout: 600,
+    userMetadata: { purpose: 'petah-tikva-permit-watch' },
+    browserSettings: {
+      viewport: { width: 1440, height: 1100 },
+      blockAds: true,
+    },
+  });
+  const browser = await chromium.connectOverCDP(session.connectUrl);
+  const context = browser.contexts()[0] || await browser.newContext();
+  return { browser, context, mode: 'browserbase', sessionId: session.id };
 }
 
 async function dismissConsent(page) {
-  const buttonPatterns = [/אישור/i, /מאשר/i, /מסכים/i, /accept/i, /agree/i, /הבנתי/i];
   for (const frame of page.frames()) {
-    for (const pattern of buttonPatterns) {
-      const button = frame.getByRole('button', { name: pattern }).first();
+    for (const name of [/אישור/i, /מאשר/i, /מסכים/i, /accept/i, /agree/i, /הבנתי/i]) {
+      const button = frame.getByRole('button', { name }).first();
       if (await button.isVisible().catch(() => false)) {
         await button.click({ timeout: 2_000 }).catch(() => {});
         return;
@@ -143,8 +141,8 @@ async function dismissConsent(page) {
   }
 }
 
-async function collectVisibleContent(page) {
-  const frameResults = [];
+async function collect(page) {
+  const frames = [];
   for (const frame of page.frames()) {
     const data = await frame.evaluate(() => {
       const visible = (element) => {
@@ -152,69 +150,48 @@ async function collectVisibleContent(page) {
         const rect = element.getBoundingClientRect();
         return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
       };
-      const bodyText = document.body?.innerText || '';
-      const headings = [...document.querySelectorAll('h1,h2,h3,h4,h5,h6')]
-        .filter(visible)
-        .map((element) => element.innerText.trim())
-        .filter(Boolean);
+      const body = document.body?.innerText || '';
       const tables = [...document.querySelectorAll('table')]
         .filter(visible)
-        .map((table) => [...table.querySelectorAll('tr')]
-          .map((row) => [...row.querySelectorAll('th,td')]
+        .flatMap((table) => [...table.querySelectorAll('tr')].map((row) =>
+          [...row.querySelectorAll('th,td')]
             .map((cell) => cell.innerText.replace(/\s+/g, ' ').trim())
             .filter(Boolean)
-            .join(' | '))
-          .filter(Boolean));
-      const definitionLists = [...document.querySelectorAll('dl')]
-        .filter(visible)
-        .map((list) => list.innerText.trim())
+            .join(' | ')))
         .filter(Boolean);
-      return { bodyText, headings, tables, definitionLists };
+      return { body, tables };
     }).catch(() => null);
-    if (data) frameResults.push({ url: frame.url(), ...data });
+    if (data) frames.push({ url: frame.url(), ...data });
   }
 
-  const combined = frameResults.map((frame) => [
-    `FRAME: ${frame.url}`,
-    frame.bodyText,
-    ...frame.tables.flat(),
-    ...frame.definitionLists,
-  ].join('\n')).join('\n\n');
-
-  return {
-    text: normalizeText(combined),
-    frames: frameResults.map((frame) => ({
-      url: frame.url,
-      headings: frame.headings,
-      tables: frame.tables,
-    })),
-  };
+  const text = normalize(frames.map((frame) => [frame.body, ...frame.tables].join('\n')).join('\n\n'));
+  return { text, frames: frames.map(({ url, tables }) => ({ url, tables })) };
 }
 
-async function waitForApplication(page, requestId) {
+async function waitForRequest(page, requestId) {
   const deadline = Date.now() + 45_000;
-  let latestContent = await collectVisibleContent(page);
+  let content = await collect(page);
   while (Date.now() < deadline) {
-    if (latestContent.text.includes(requestId) || isBlocked(latestContent.text)) return latestContent;
+    if (content.text.includes(requestId) || blocked(content.text)) return content;
     await page.waitForTimeout(2_000);
-    latestContent = await collectVisibleContent(page);
+    content = await collect(page);
   }
-  return latestContent;
+  return content;
 }
 
-async function inspectTarget(context, target, mode) {
+async function inspect(context, target, mode) {
   const page = await context.newPage();
-  const screenshotPath = path.join(ARTIFACT_DIR, `request-${target.requestId}.png`);
+  const screenshot = path.join(ARTIFACT_DIR, `request-${target.requestId}.png`);
   try {
     await page.goto(target.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
     await dismissConsent(page);
     await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
-    const content = await waitForApplication(page, target.requestId);
-    await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => {});
+    const content = await waitForRequest(page, target.requestId);
+    await page.screenshot({ path: screenshot, fullPage: true }).catch(() => {});
 
-    if (isBlocked(content.text)) throw new Error(`Municipality access was blocked in ${mode} mode.`);
-    if (content.text.length < 100) throw new Error(`The page returned too little visible content (${content.text.length} characters).`);
-    if (!content.text.includes(target.requestId)) throw new Error(`Request number ${target.requestId} was not found in the loaded page.`);
+    if (blocked(content.text)) throw new Error(`Municipality access was blocked in ${mode} mode.`);
+    if (content.text.length < 100) throw new Error(`Only ${content.text.length} visible characters were returned.`);
+    if (!content.text.includes(target.requestId)) throw new Error(`Request ${target.requestId} was not visible after the page loaded.`);
 
     return {
       requestId: target.requestId,
@@ -223,142 +200,138 @@ async function inspectTarget(context, target, mode) {
       title: await page.title(),
       checkedAt: new Date().toISOString(),
       browserMode: mode,
-      contentHash: sha256(content.text),
+      contentHash: hash(content.text),
       text: content.text,
       frames: content.frames,
-      screenshot: path.relative(ROOT, screenshotPath),
+      screenshot: path.relative(ROOT, screenshot),
     };
   } finally {
     await page.close().catch(() => {});
   }
 }
 
-async function readPrevious(requestId) {
-  const filePath = path.join(STATE_DIR, `request-${requestId}.json`);
-  try {
-    return JSON.parse(await fs.readFile(filePath, 'utf8'));
-  } catch (error) {
-    if (error.code === 'ENOENT') return null;
-    throw error;
-  }
-}
-
-async function saveSnapshot(snapshot) {
-  const filePath = path.join(STATE_DIR, `request-${snapshot.requestId}.json`);
-  await fs.writeFile(filePath, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8');
-}
-
-function quoteLines(lines) {
-  if (!lines.length) return '_None detected._';
-  return lines.map((line) => `- ${line}`).join('\n');
-}
-
-function buildReport(results, mode, sessionId) {
-  const changed = results.filter((item) => item.status === 'changed');
-  const errors = results.filter((item) => item.status === 'error');
-  const lines = [
-    '# Petah Tikva permit watcher',
-    '',
-    `Checked: ${new Date().toISOString()}`,
-    `Browser mode: ${mode}`,
-    sessionId ? `Browserbase session: ${sessionId}` : null,
-    '',
-  ].filter((line) => line !== null);
-
-  for (const item of results) {
-    lines.push(`## Request ${item.requestId}`);
-    lines.push('');
-    lines.push(`Status: **${item.status}**`);
-    lines.push(`Source: ${item.url}`);
-    if (item.screenshot) lines.push(`Screenshot artifact: \`${item.screenshot}\``);
-    lines.push('');
-
-    if (item.status === 'changed') {
-      lines.push('### Added or newly visible', '', quoteLines(item.diff.added), '');
-      lines.push('### Removed or no longer visible', '', quoteLines(item.diff.removed), '');
-    } else if (item.status === 'baseline') {
-      lines.push('Initial baseline saved. Future runs will compare against this snapshot.', '');
-    } else if (item.status === 'unchanged') {
-      lines.push('No visible change was detected.', '');
-    } else if (item.status === 'error') {
-      lines.push(`Error: ${item.error}`, '');
-    }
-  }
-
-  lines.push('---');
-  lines.push(`Changed requests: ${changed.map((item) => item.requestId).join(', ') || 'none'}`);
-  lines.push(`Errors: ${errors.map((item) => item.requestId).join(', ') || 'none'}`);
-  return `${lines.join('\n')}\n`;
-}
-
-let browserBundle;
+let local;
+let remote;
 const results = [];
+
 try {
-  browserBundle = await createBrowser();
+  local = await launchGitHubBrowser();
   for (const target of TARGETS) {
+    let current;
+    let error;
+
     try {
-      const current = await inspectTarget(browserBundle.context, target, browserBundle.mode);
-      const previous = await readPrevious(target.requestId);
-      let status = 'unchanged';
-      let diff = { added: [], removed: [] };
-
-      if (!previous) status = 'baseline';
-      else if (previous.contentHash !== current.contentHash) {
-        status = 'changed';
-        diff = lineDiff(previous.text, current.text);
+      current = await inspect(local.context, target, local.mode);
+    } catch (firstError) {
+      error = firstError;
+      if (process.env.BROWSERBASE_API_KEY) {
+        remote ||= await launchBrowserbase();
+        try {
+          current = await inspect(remote.context, target, remote.mode);
+          error = null;
+        } catch (secondError) {
+          error = secondError;
+        }
       }
-
-      await saveSnapshot(current);
-      results.push({
-        requestId: target.requestId,
-        url: target.url,
-        status,
-        diff,
-        screenshot: current.screenshot,
-        previousHash: previous?.contentHash || null,
-        currentHash: current.contentHash,
-      });
-    } catch (error) {
-      results.push({
-        requestId: target.requestId,
-        url: target.url,
-        status: 'error',
-        error: error instanceof Error ? error.message : String(error),
-      });
     }
+
+    if (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const previousError = await readJson(errorPath(target.requestId));
+      const errorHash = hash(message);
+      const isNewError = previousError?.errorHash !== errorHash;
+      if (isNewError) await writeJson(errorPath(target.requestId), { errorHash, message, firstSeenAt: new Date().toISOString() });
+      results.push({
+        requestId: target.requestId,
+        url: target.url,
+        status: isNewError ? 'error' : 'error-repeated',
+        error: message,
+      });
+      continue;
+    }
+
+    await removeIfPresent(errorPath(target.requestId));
+    const previous = await readJson(statePath(target.requestId));
+    let status = 'unchanged';
+    let diff = { added: [], removed: [] };
+    if (!previous) status = 'baseline';
+    else if (previous.contentHash !== current.contentHash) {
+      status = 'changed';
+      diff = diffLines(previous.text, current.text);
+    }
+    if (status !== 'unchanged') await writeJson(statePath(target.requestId), current);
+
+    results.push({
+      requestId: target.requestId,
+      url: target.url,
+      status,
+      diff,
+      browserMode: current.browserMode,
+      screenshot: current.screenshot,
+      previousHash: previous?.contentHash || null,
+      currentHash: current.contentHash,
+    });
   }
 } finally {
-  await browserBundle?.browser?.close().catch(() => {});
+  await local?.browser?.close().catch(() => {});
+  await remote?.browser?.close().catch(() => {});
 }
 
-const hasChanges = results.some((item) => item.status === 'changed');
-const hasErrors = results.some((item) => item.status === 'error');
-const baselineCreated = results.some((item) => item.status === 'baseline');
-const shouldNotify = hasChanges || hasErrors || FORCE_NOTIFY;
-const report = buildReport(results, browserBundle?.mode || 'unavailable', browserBundle?.sessionId || null);
+const changes = results.filter((item) => item.status === 'changed');
+const newErrors = results.filter((item) => item.status === 'error');
+const repeatedErrors = results.filter((item) => item.status === 'error-repeated');
+const shouldNotify = changes.length > 0 || newErrors.length > 0 || FORCE_NOTIFY;
+const quote = (lines) => lines.length ? lines.map((line) => `- ${line}`).join('\n') : '_None detected._';
+const report = [
+  '# Petah Tikva permit watcher',
+  '',
+  `Checked: ${new Date().toISOString()}`,
+  '',
+  ...results.flatMap((item) => {
+    const lines = [
+      `## Request ${item.requestId}`,
+      '',
+      `Status: **${item.status}**`,
+      `Source: ${item.url}`,
+      item.browserMode ? `Browser: ${item.browserMode}` : null,
+      item.screenshot ? `Screenshot artifact: \`${item.screenshot}\`` : null,
+      '',
+    ].filter((line) => line !== null);
+    if (item.status === 'changed') {
+      lines.push('### Added or newly visible', '', quote(item.diff.added), '');
+      lines.push('### Removed or no longer visible', '', quote(item.diff.removed), '');
+    } else if (item.status === 'baseline') lines.push('Initial baseline saved.', '');
+    else if (item.status === 'unchanged') lines.push('No visible change was detected.', '');
+    else lines.push(`Error: ${item.error}`, '');
+    return lines;
+  }),
+  '---',
+  `Changed requests: ${changes.map((item) => item.requestId).join(', ') || 'none'}`,
+  `New errors: ${newErrors.map((item) => item.requestId).join(', ') || 'none'}`,
+  `Repeated errors: ${repeatedErrors.map((item) => item.requestId).join(', ') || 'none'}`,
+].join('\n') + '\n';
 
-await fs.writeFile(REPORT_PATH, report, 'utf8');
-await fs.writeFile(RESULT_PATH, `${JSON.stringify({
+const result = {
   checkedAt: new Date().toISOString(),
-  mode: browserBundle?.mode || 'unavailable',
-  hasChanges,
-  hasErrors,
-  baselineCreated,
+  hasChanges: changes.length > 0,
+  hasNewErrors: newErrors.length > 0,
+  hasRepeatedErrors: repeatedErrors.length > 0,
   shouldNotify,
   results,
-}, null, 2)}\n`, 'utf8');
+};
 
+await fs.writeFile(path.join(ROOT, 'report.md'), report, 'utf8');
+await writeJson(path.join(ROOT, 'result.json'), result);
 if (process.env.GITHUB_STEP_SUMMARY) await fs.appendFile(process.env.GITHUB_STEP_SUMMARY, report, 'utf8');
 if (process.env.GITHUB_OUTPUT) {
-  const changedIds = results.filter((item) => item.status === 'changed').map((item) => item.requestId).join(',');
   await fs.appendFile(process.env.GITHUB_OUTPUT, [
-    `has_changes=${hasChanges}`,
-    `has_errors=${hasErrors}`,
-    `baseline_created=${baselineCreated}`,
-    `should_notify=${shouldNotify}`,
-    `changed_ids=${changedIds}`,
+    `has_changes=${result.hasChanges}`,
+    `has_new_errors=${result.hasNewErrors}`,
+    `has_repeated_errors=${result.hasRepeatedErrors}`,
+    `should_notify=${result.shouldNotify}`,
+    `changed_ids=${changes.map((item) => item.requestId).join(',')}`,
   ].join('\n') + '\n', 'utf8');
 }
 
 console.log(report);
-if (hasErrors) process.exitCode = 2;
+if (result.hasNewErrors) process.exitCode = 2;
