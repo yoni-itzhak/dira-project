@@ -84,9 +84,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CHANGED_IDS: ${{ steps.watcher.outputs.changed_ids }}
-          HAS_ERRORS: ${{ steps.watcher.outputs.has_errors }}
+          HAS_NEW_ERRORS: ${{ steps.watcher.outputs.has_new_errors }}
         run: |
-          if [ "$HAS_ERRORS" = "true" ]; then
+          if [ "$HAS_NEW_ERRORS" = "true" ]; then
             TITLE="Permit watcher needs attention"
           elif [ -n "$CHANGED_IDS" ]; then
             TITLE="Permit update detected: $CHANGED_IDS"
@@ -98,6 +98,6 @@ jobs:
             --body-file permit-watch/report.md \
             --assignee "${{ github.repository_owner }}"
 
-      - name: Fail when checking failed
-        if: steps.watcher.outputs.has_errors == 'true'
+      - name: Fail on a new checking error
+        if: steps.watcher.outputs.has_new_errors == 'true'
         run: exit 1
