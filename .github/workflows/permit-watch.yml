@@ -1,11 +1,6 @@
 name: Petah Tikva permit watcher
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - '.github/workflows/permit-watch.yml'
   workflow_dispatch:
     inputs:
       force_notify:
@@ -13,8 +8,10 @@ on:
         required: false
         default: false
         type: boolean
+  issues:
+    types: [opened]
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '17 8 * * *'
       timezone: 'Asia/Jerusalem'
 
 permissions:
@@ -27,6 +24,7 @@ concurrency:
 
 jobs:
   check-permits:
+    if: github.event_name != 'issues' || github.event.issue.title == '[permit-watch-run]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -53,7 +51,7 @@ jobs:
         id: watcher
         working-directory: permit-watch
         env:
-          FORCE_NOTIFY: ${{ github.event_name == 'push' || github.event_name == 'schedule' || inputs.force_notify }}
+          FORCE_NOTIFY: ${{ github.event_name == 'issues' || inputs.force_notify }}
           BROWSERBASE_API_KEY: ${{ secrets.BROWSERBASE_API_KEY }}
           BROWSERBASE_PROJECT_ID: ${{ secrets.BROWSERBASE_PROJECT_ID }}
         run: |
@@ -61,19 +59,36 @@ jobs:
           from pathlib import Path
           path = Path('watch.mjs')
           source = path.read_text()
-          needle = "  const page = await context.newPage();\n"
-          replacement = """  const page = await context.newPage();
+
+          page_needle = "  const page = await context.newPage();\n"
+          page_replacement = """  const page = await context.newPage();
+            page.on('requestfailed', (request) => {
+              console.log(`REQUEST FAILED: ${request.resourceType()} ${request.url()} ${request.failure()?.errorText || ''}`);
+            });
             await page.route('**/*', async (route) => {
-              if (route.request().resourceType() === 'stylesheet') {
+              const request = route.request();
+              if (request.resourceType() === 'stylesheet' || /\\.css(?:[?#]|$)/i.test(request.url())) {
                 await route.fulfill({ status: 200, contentType: 'text/css', body: '' });
               } else {
                 await route.continue();
               }
             });
           """
-          if needle not in source:
-              raise SystemExit('Could not install stylesheet-timeout workaround')
-          path.write_text(source.replace(needle, replacement, 1))
+          if page_needle not in source:
+              raise SystemExit('Could not install browser diagnostics')
+          source = source.replace(page_needle, page_replacement, 1)
+
+          error_needle = "    if (!content.text.includes(target.requestId)) throw new Error(`Request ${target.requestId} was not visible after the page loaded.`);\n"
+          error_replacement = """    if (!content.text.includes(target.requestId)) {
+              const frameUrls = content.frames.map((frame) => frame.url).join(', ');
+              const visibleText = content.text.slice(-1500).replace(/\\n/g, ' | ');
+              throw new Error(`Request ${target.requestId} was not visible. Final URL: ${page.url()}. Title: ${await page.title()}. Frames: ${frameUrls}. Visible text: ${visibleText}`);
+            }
+          """
+          if error_needle not in source:
+              raise SystemExit('Could not install detailed error reporting')
+          source = source.replace(error_needle, error_replacement, 1)
+          path.write_text(source)
           PY
           node watch.mjs
         continue-on-error: true
@@ -117,10 +132,21 @@ jobs:
           else
             TITLE="Permit watcher test notification"
           fi
+          {
+            echo "Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo
+            cat permit-watch/report.md
+          } > permit-watch/report-with-run.md
           gh issue create \
             --title "$TITLE" \
-            --body-file permit-watch/report.md \
+            --body-file permit-watch/report-with-run.md \
             --assignee "${{ github.repository_owner }}"
+
+      - name: Close API trigger issue
+        if: github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh issue close "${{ github.event.issue.number }}" --comment "Permit watcher run completed."
 
       - name: Fail on a new checking error
         if: steps.watcher.outputs.has_new_errors == 'true'
