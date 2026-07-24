@@ -1,0 +1,103 @@
+name: Petah Tikva permit watcher
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_notify:
+        description: Create a notification issue even if nothing changed
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: '17 8 * * *'
+      timezone: 'Asia/Jerusalem'
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: petah-tikva-permit-watch
+  cancel-in-progress: false
+
+jobs:
+  check-permits:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        working-directory: permit-watch
+        run: npm install --no-audit --no-fund
+
+      - name: Install Chromium
+        working-directory: permit-watch
+        run: npx playwright install --with-deps chromium
+
+      - name: Check permit requests
+        id: watcher
+        working-directory: permit-watch
+        env:
+          FORCE_NOTIFY: ${{ inputs.force_notify || 'false' }}
+          BROWSERBASE_API_KEY: ${{ secrets.BROWSERBASE_API_KEY }}
+          BROWSERBASE_PROJECT_ID: ${{ secrets.BROWSERBASE_PROJECT_ID }}
+        run: node watch.mjs
+        continue-on-error: true
+
+      - name: Upload screenshots and report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: permit-watch-${{ github.run_number }}
+          path: |
+            permit-watch/artifacts/
+            permit-watch/report.md
+            permit-watch/result.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Commit new snapshots
+        if: always()
+        run: |
+          if [ -z "$(git status --porcelain -- permit-watch/state)" ]; then
+            echo "No snapshot changes to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add permit-watch/state
+          git commit -m "Update permit watcher snapshots"
+          git push
+
+      - name: Create notification issue
+        if: steps.watcher.outputs.should_notify == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANGED_IDS: ${{ steps.watcher.outputs.changed_ids }}
+          HAS_NEW_ERRORS: ${{ steps.watcher.outputs.has_new_errors }}
+        run: |
+          if [ "$HAS_NEW_ERRORS" = "true" ]; then
+            TITLE="Permit watcher needs attention"
+          elif [ -n "$CHANGED_IDS" ]; then
+            TITLE="Permit update detected: $CHANGED_IDS"
+          else
+            TITLE="Permit watcher test notification"
+          fi
+          gh issue create \
+            --title "$TITLE" \
+            --body-file permit-watch/report.md \
+            --assignee "${{ github.repository_owner }}"
+
+      - name: Fail on a new checking error
+        if: steps.watcher.outputs.has_new_errors == 'true'
+        run: exit 1

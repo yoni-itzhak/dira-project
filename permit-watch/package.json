@@ -1,0 +1,17 @@
+{
+  "name": "petah-tikva-permit-watch",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Daily watcher for Petah Tikva municipality building permit requests",
+  "scripts": {
+    "check": "node watch.mjs"
+  },
+  "dependencies": {
+    "@browserbasehq/sdk": "2.6.0",
+    "playwright": "1.61.1"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
