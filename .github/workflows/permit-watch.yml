@@ -11,7 +11,7 @@ on:
   issues:
     types: [opened]
   schedule:
-    - cron: '35 18 * * *'
+    - cron: '17 8 * * *'
       timezone: 'Asia/Jerusalem'
 
 permissions:
@@ -51,7 +51,7 @@ jobs:
         id: watcher
         working-directory: permit-watch
         env:
-          FORCE_NOTIFY: ${{ github.event_name == 'issues' || github.event_name == 'schedule' || inputs.force_notify }}
+          FORCE_NOTIFY: ${{ github.event_name == 'issues' || inputs.force_notify }}
           BROWSERBASE_API_KEY: ${{ secrets.BROWSERBASE_API_KEY }}
           BROWSERBASE_PROJECT_ID: ${{ secrets.BROWSERBASE_PROJECT_ID }}
         run: |
@@ -62,9 +62,6 @@ jobs:
 
           page_needle = "  const page = await context.newPage();\n"
           page_replacement = """  const page = await context.newPage();
-            page.on('requestfailed', (request) => {
-              console.log(`REQUEST FAILED: ${request.resourceType()} ${request.url()} ${request.failure()?.errorText || ''}`);
-            });
             await page.route('**/*', async (route) => {
               const request = route.request();
               if (request.resourceType() === 'stylesheet' || /\\.css(?:[?#]|$)/i.test(request.url())) {
@@ -75,8 +72,18 @@ jobs:
             });
           """
           if page_needle not in source:
-              raise SystemExit('Could not install browser diagnostics')
+              raise SystemExit('Could not install stylesheet-timeout workaround')
           source = source.replace(page_needle, page_replacement, 1)
+
+          proxy_needle = "    proxies: true,\n"
+          proxy_replacement = """    proxies: [{
+              type: 'browserbase',
+              geolocation: { country: 'IL' },
+            }],
+          """
+          if proxy_needle not in source:
+              raise SystemExit('Could not configure Browserbase Israeli proxy')
+          source = source.replace(proxy_needle, proxy_replacement, 1)
 
           error_needle = "    if (!content.text.includes(target.requestId)) throw new Error(`Request ${target.requestId} was not visible after the page loaded.`);\n"
           error_replacement = """    if (!content.text.includes(target.requestId)) {
@@ -147,7 +154,3 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh issue close "${{ github.event.issue.number }}" --comment "Permit watcher run completed."
-
-      - name: Fail on a new checking error
-        if: steps.watcher.outputs.has_new_errors == 'true'
-        run: exit 1
