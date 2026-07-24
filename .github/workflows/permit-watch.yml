@@ -14,7 +14,7 @@ on:
         default: false
         type: boolean
   schedule:
-    - cron: '17 8 * * *'
+    - cron: '*/5 * * * *'
       timezone: 'Asia/Jerusalem'
 
 permissions:
@@ -53,7 +53,7 @@ jobs:
         id: watcher
         working-directory: permit-watch
         env:
-          FORCE_NOTIFY: ${{ github.event_name == 'push' || inputs.force_notify }}
+          FORCE_NOTIFY: ${{ github.event_name == 'push' || github.event_name == 'schedule' || inputs.force_notify }}
           BROWSERBASE_API_KEY: ${{ secrets.BROWSERBASE_API_KEY }}
           BROWSERBASE_PROJECT_ID: ${{ secrets.BROWSERBASE_PROJECT_ID }}
         run: |
