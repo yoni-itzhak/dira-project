@@ -56,7 +56,26 @@ jobs:
           FORCE_NOTIFY: ${{ github.event_name == 'push' || inputs.force_notify }}
           BROWSERBASE_API_KEY: ${{ secrets.BROWSERBASE_API_KEY }}
           BROWSERBASE_PROJECT_ID: ${{ secrets.BROWSERBASE_PROJECT_ID }}
-        run: node watch.mjs
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('watch.mjs')
+          source = path.read_text()
+          needle = "  const page = await context.newPage();\n"
+          replacement = """  const page = await context.newPage();
+            await page.route('**/*', async (route) => {
+              if (route.request().resourceType() === 'stylesheet') {
+                await route.fulfill({ status: 200, contentType: 'text/css', body: '' });
+              } else {
+                await route.continue();
+              }
+            });
+          """
+          if needle not in source:
+              raise SystemExit('Could not install stylesheet-timeout workaround')
+          path.write_text(source.replace(needle, replacement, 1))
+          PY
+          node watch.mjs
         continue-on-error: true
 
       - name: Upload screenshots and report
